@@ -41,10 +41,12 @@
 //! }
 //! ```
 
+pub mod builder;
 pub mod field;
 
 use std::{io::Cursor, result};
 
+use crate::builder::RadiotapBuilder;
 use crate::field::*;
 
 /// All errors returned and used by the radiotap module.
@@ -223,6 +225,11 @@ pub struct Radiotap {
 }
 
 impl Radiotap {
+    /// Returns a [`RadiotapBuilder`] used for programmatically constructing a [`Radiotap`] value.
+    pub fn build() -> RadiotapBuilder {
+        RadiotapBuilder::new()
+    }
+
     /// Returns the parsed [Radiotap](struct.Radiotap.html) from an input byte
     /// array.
     pub fn from_bytes(input: &[u8]) -> Result<Radiotap> {

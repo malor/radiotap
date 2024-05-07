@@ -167,7 +167,7 @@ pub fn vht_rate(index: u8, bw: Bandwidth, gi: GuardInterval, nss: u8) -> Result<
 }
 
 /// Flags describing the channel.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ChannelFlags {
     /// Turbo channel.
     pub turbo: bool,
@@ -188,7 +188,7 @@ pub struct ChannelFlags {
 }
 
 /// Extended flags describing the channel.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct XChannelFlags {
     /// Turbo channel.
     pub turbo: bool,

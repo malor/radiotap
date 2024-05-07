@@ -71,6 +71,36 @@ impl Kind {
         })
     }
 
+    /// Returns the bit number for the field.
+    pub fn bit(&self) -> u8 {
+        match self {
+            Kind::TSFT => 0,
+            Kind::Flags => 1,
+            Kind::Rate => 2,
+            Kind::Channel => 3,
+            Kind::FHSS => 4,
+            Kind::AntennaSignal => 5,
+            Kind::AntennaNoise => 6,
+            Kind::LockQuality => 7,
+            Kind::TxAttenuation => 8,
+            Kind::TxAttenuationDb => 9,
+            Kind::TxPower => 10,
+            Kind::Antenna => 11,
+            Kind::AntennaSignalDb => 12,
+            Kind::AntennaNoiseDb => 13,
+            Kind::RxFlags => 14,
+            Kind::TxFlags => 15,
+            Kind::RTSRetries => 16,
+            Kind::DataRetries => 17,
+            Kind::XChannel => 18,
+            Kind::MCS => 19,
+            Kind::AMPDUStatus => 20,
+            Kind::VHT => 21,
+            Kind::Timestamp => 22,
+            Kind::VendorNamespace(_) => 30,
+        }
+    }
+
     /// Returns the align value for the field.
     pub fn align(self) -> u64 {
         match self {
@@ -254,7 +284,7 @@ impl Field for TSFT {
 }
 
 /// Properties of transmitted and received frames.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Flags {
     /// The frame was sent/received during CFP.
     pub cfp: bool,
@@ -478,7 +508,7 @@ impl Field for Antenna {
 }
 
 /// Properties of received frames.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct RxFlags {
     pub bad_plcp: bool,
 }
@@ -493,7 +523,7 @@ impl Field for RxFlags {
 }
 
 /// Properties of transmitted frames.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct TxFlags {
     /// Transmission failed due to excessive retries.
     pub fail: bool,
@@ -869,5 +899,23 @@ impl Field for Timestamp {
             position,
             accuracy,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_fields() {
+        for value in 0..u8::MAX {
+            match value {
+                0..=22 => {
+                    let kind = Kind::new(value).unwrap();
+                    assert_eq!(kind.bit(), value);
+                }
+                _ => assert!(matches!(Kind::new(value), Err(Error::UnsupportedField))),
+            }
+        }
     }
 }

@@ -4,7 +4,7 @@ pub mod ext;
 
 use bitops::BitOps;
 use byteorder::{ReadBytesExt, LE};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
 use crate::{field::ext::*, Error, Result};
 
@@ -144,6 +144,12 @@ pub trait Field {
         Self: Sized;
 }
 
+pub trait Unparse {
+    // Unparse a given value according to the rules of the Radiotap wire format.
+    // Returns the size of the serialized value in bytes or the encountered error.
+    fn unparse<W: Write>(&self, writer: W) -> Result<usize>;
+}
+
 /// Parse any `Field` and return a `Result<T>`.
 pub fn from_bytes<T>(input: &[u8]) -> Result<T>
 where
@@ -158,6 +164,31 @@ where
     T: Field,
 {
     Ok(Some(T::from_bytes(input)?))
+}
+
+/// Unparse a field value that may or may not be set. Returns the size of the
+/// serialized value in bytes or the encountered error. The size of a [None]
+/// value is 0.
+pub fn unparse_some<T, W>(writer: W, value: Option<&T>) -> Result<usize>
+where
+    T: Unparse,
+    W: Write,
+{
+    if let Some(value) = value {
+        value.unparse(writer)
+    } else {
+        Ok(0)
+    }
+}
+
+macro_rules! set_flag {
+    ($flag:expr, $mask:expr) => {
+        if $flag {
+            $mask
+        } else {
+            0
+        }
+    };
 }
 
 /// The Radiotap header, contained in all Radiotap captures.
@@ -246,6 +277,24 @@ impl Field for Header {
     }
 }
 
+impl Unparse for Header {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let length = self.length as u16;
+        let present = self
+            .present
+            .iter()
+            .fold(0u32, |present, kind| present | 1 << kind.bit());
+
+        let mut size = 0;
+        size += writer.write(&[self.version])?;
+        size += writer.write(b"\x00")?; // pad
+        size += writer.write(&length.to_le_bytes())?;
+        size += writer.write(&present.to_le_bytes())?;
+
+        Ok(size)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct VendorNamespace {
     pub oui: Oui,
@@ -280,6 +329,12 @@ impl Field for TSFT {
     fn from_bytes(input: &[u8]) -> Result<TSFT> {
         let value = Cursor::new(input).read_u64::<LE>()?;
         Ok(TSFT { value })
+    }
+}
+
+impl Unparse for TSFT {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
     }
 }
 
@@ -321,6 +376,21 @@ impl Field for Flags {
     }
 }
 
+impl Unparse for Flags {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let flags: u8 = set_flag!(self.cfp, 0x01)
+            | set_flag!(self.preamble, 0x02)
+            | set_flag!(self.wep, 0x04)
+            | set_flag!(self.fragmentation, 0x08)
+            | set_flag!(self.fcs, 0x10)
+            | set_flag!(self.data_pad, 0x20)
+            | set_flag!(self.bad_fcs, 0x40)
+            | set_flag!(self.sgi, 0x80);
+
+        Ok(writer.write(&[flags])?)
+    }
+}
+
 /// The legacy data rate in Mbps. Usually only one of the
 /// [Rate](struct.Rate.html), [MCS](struct.MCS.html), and [VHT](struct.VHT.html)
 /// fields is present.
@@ -333,6 +403,13 @@ impl Field for Rate {
     fn from_bytes(input: &[u8]) -> Result<Rate> {
         let value = f32::from(Cursor::new(input).read_i8()?) / 2.0;
         Ok(Rate { value })
+    }
+}
+
+impl Unparse for Rate {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let value = (self.value * 2.0).floor() as u8;
+        Ok(writer.write(&value.to_le_bytes())?)
     }
 }
 
@@ -365,6 +442,25 @@ impl Field for Channel {
     }
 }
 
+impl Unparse for Channel {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let flags: u16 = set_flag!(self.flags.turbo, 0x0010)
+            | set_flag!(self.flags.cck, 0x0020)
+            | set_flag!(self.flags.ofdm, 0x0040)
+            | set_flag!(self.flags.ghz2, 0x0080)
+            | set_flag!(self.flags.ghz5, 0x0100)
+            | set_flag!(self.flags.passive, 0x0200)
+            | set_flag!(self.flags.dynamic, 0x0400)
+            | set_flag!(self.flags.gfsk, 0x0800);
+
+        let mut size = 0;
+        size += writer.write(&self.freq.to_le_bytes())?;
+        size += writer.write(&flags.to_le_bytes())?;
+
+        Ok(size)
+    }
+}
+
 /// The hop set and pattern for frequency-hopping radios.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FHSS {
@@ -378,6 +474,16 @@ impl Field for FHSS {
         let hopset = cursor.read_u8()?;
         let pattern = cursor.read_u8()?;
         Ok(FHSS { hopset, pattern })
+    }
+}
+
+impl Unparse for FHSS {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let mut size = 0;
+        size += writer.write(&[self.hopset])?;
+        size += writer.write(&[self.pattern])?;
+
+        Ok(size)
     }
 }
 
@@ -395,6 +501,12 @@ impl Field for AntennaSignal {
     }
 }
 
+impl Unparse for AntennaSignal {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
+    }
+}
+
 /// RF signal power at the antenna in dB. Indicates the RF signal power at the
 /// antenna, in decibels difference from an arbitrary, fixed reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -406,6 +518,12 @@ impl Field for AntennaSignalDb {
     fn from_bytes(input: &[u8]) -> Result<AntennaSignalDb> {
         let value = Cursor::new(input).read_u8()?;
         Ok(AntennaSignalDb { value })
+    }
+}
+
+impl Unparse for AntennaSignalDb {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
     }
 }
 
@@ -423,6 +541,12 @@ impl Field for AntennaNoise {
     }
 }
 
+impl Unparse for AntennaNoise {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
+    }
+}
+
 /// RF noise power at the antenna in dB. Indicates the RF signal noise at the
 /// antenna, in decibels difference from an arbitrary, fixed reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -434,6 +558,12 @@ impl Field for AntennaNoiseDb {
     fn from_bytes(input: &[u8]) -> Result<AntennaNoiseDb> {
         let value = Cursor::new(input).read_u8()?;
         Ok(AntennaNoiseDb { value })
+    }
+}
+
+impl Unparse for AntennaNoiseDb {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
     }
 }
 
@@ -451,6 +581,12 @@ impl Field for LockQuality {
     }
 }
 
+impl Unparse for LockQuality {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
+    }
+}
+
 /// Transmit power expressed as unitless distance from max power. 0 is max
 /// power. Monotonically nondecreasing with lower power levels.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -462,6 +598,12 @@ impl Field for TxAttenuation {
     fn from_bytes(input: &[u8]) -> Result<TxAttenuation> {
         let value = Cursor::new(input).read_u16::<LE>()?;
         Ok(TxAttenuation { value })
+    }
+}
+
+impl Unparse for TxAttenuation {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
     }
 }
 
@@ -479,6 +621,12 @@ impl Field for TxAttenuationDb {
     }
 }
 
+impl Unparse for TxAttenuationDb {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
+    }
+}
+
 /// Transmit power in dBm. This is the absolute power level measured at the
 /// antenna port.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -490,6 +638,12 @@ impl Field for TxPower {
     fn from_bytes(input: &[u8]) -> Result<TxPower> {
         let value = Cursor::new(input).read_i8()?;
         Ok(TxPower { value })
+    }
+}
+
+impl Unparse for TxPower {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
     }
 }
 
@@ -507,6 +661,12 @@ impl Field for Antenna {
     }
 }
 
+impl Unparse for Antenna {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
+    }
+}
+
 /// Properties of received frames.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct RxFlags {
@@ -519,6 +679,13 @@ impl Field for RxFlags {
         Ok(RxFlags {
             bad_plcp: flags.is_flag_set(0x0002),
         })
+    }
+}
+
+impl Unparse for RxFlags {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let flags: u16 = if self.bad_plcp { 0x0002 } else { 0x0000 };
+        Ok(writer.write(&flags.to_le_bytes())?)
     }
 }
 
@@ -552,6 +719,18 @@ impl Field for TxFlags {
     }
 }
 
+impl Unparse for TxFlags {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let flags: u16 = set_flag!(self.fail, 0x0001)
+            | set_flag!(self.cts, 0x0002)
+            | set_flag!(self.rts, 0x0004)
+            | set_flag!(self.no_ack, 0x0008)
+            | set_flag!(self.no_seq, 0x0010);
+
+        Ok(writer.write(&flags.to_le_bytes())?)
+    }
+}
+
 /// Number of RTS retries a transmitted frame used.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RTSRetries {
@@ -565,6 +744,12 @@ impl Field for RTSRetries {
     }
 }
 
+impl Unparse for RTSRetries {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
+    }
+}
+
 /// Number of data retries a transmitted frame used.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct DataRetries {
@@ -575,6 +760,12 @@ impl Field for DataRetries {
     fn from_bytes(input: &[u8]) -> Result<DataRetries> {
         let value = Cursor::new(input).read_u8()?;
         Ok(DataRetries { value })
+    }
+}
+
+impl Unparse for DataRetries {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        Ok(writer.write(&self.value.to_le_bytes())?)
     }
 }
 
@@ -620,6 +811,34 @@ impl Field for XChannel {
             channel,
             max_power,
         })
+    }
+}
+
+impl Unparse for XChannel {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let flags: u32 = set_flag!(self.flags.turbo, 0x0000_0010)
+            | set_flag!(self.flags.cck, 0x0000_0020)
+            | set_flag!(self.flags.ofdm, 0x0000_0040)
+            | set_flag!(self.flags.ghz2, 0x0000_0080)
+            | set_flag!(self.flags.ghz5, 0x0000_0100)
+            | set_flag!(self.flags.passive, 0x0000_0200)
+            | set_flag!(self.flags.dynamic, 0x0000_0400)
+            | set_flag!(self.flags.gfsk, 0x0000_0800)
+            | set_flag!(self.flags.gsm, 0x0000_1000)
+            | set_flag!(self.flags.sturbo, 0x0000_2000)
+            | set_flag!(self.flags.half, 0x0000_4000)
+            | set_flag!(self.flags.quarter, 0x0000_8000)
+            | set_flag!(self.flags.ht20, 0x0001_0000)
+            | set_flag!(self.flags.ht40u, 0x0002_0000)
+            | set_flag!(self.flags.ht40d, 0x0004_0000);
+
+        let mut size = 0;
+        size += writer.write(&flags.to_le_bytes())?;
+        size += writer.write(&self.freq.to_le_bytes())?;
+        size += writer.write(&self.channel.to_le_bytes())?;
+        size += writer.write(&self.max_power.to_le_bytes())?;
+
+        Ok(size)
     }
 }
 
@@ -695,7 +914,7 @@ impl Field for MCS {
 
         if known.is_flag_set(0x40) {
             // Yes this is stored weirdly
-            mcs.ness = Some(known & 0x80 >> 6 | flags & 0x80 >> 7)
+            mcs.ness = Some((known & 0x80) >> 6 | (flags & 0x80) >> 7)
         }
 
         if mcs.bw.is_some() && mcs.gi.is_some() {
@@ -703,6 +922,68 @@ impl Field for MCS {
         }
 
         Ok(mcs)
+    }
+}
+
+impl Unparse for MCS {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let mut known = 0u8;
+        let mut flags = 0u8;
+
+        if let Some(bw) = self.bw {
+            known |= 0x01;
+            flags |= bw.code()? & 0x03;
+        }
+
+        let index = if let Some(index) = self.index {
+            known |= 0x02;
+            index
+        } else {
+            0
+        };
+
+        if let Some(gi) = self.gi {
+            known |= 0x04;
+            match gi {
+                GuardInterval::Short => flags |= 0x04,
+                GuardInterval::Long => (),
+            }
+        }
+
+        if let Some(format) = self.format {
+            known |= 0x08;
+            match format {
+                HTFormat::Greenfield => flags |= 0x08,
+                HTFormat::Mixed => (),
+            }
+        }
+
+        if let Some(fec) = self.fec {
+            known |= 0x10;
+            match fec {
+                FEC::LDPC => flags |= 0x10,
+                FEC::BCC => (),
+            }
+        }
+
+        if let Some(stbc) = self.stbc {
+            known |= 0x20;
+            flags |= (stbc << 5) & 0x60;
+        }
+
+        if let Some(ness) = self.ness {
+            known |= 0x40;
+
+            flags |= (ness & 0x1) << 7;
+            known |= (ness & 0x2) << 6;
+        }
+
+        let mut size = 0;
+        size += writer.write(&[known])?;
+        size += writer.write(&[flags])?;
+        size += writer.write(&[index])?;
+
+        Ok(size)
     }
 }
 
@@ -744,6 +1025,32 @@ impl Field for AMPDUStatus {
         }
 
         Ok(ampdu)
+    }
+}
+
+impl Unparse for AMPDUStatus {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let mut flags: u16 = 0;
+        if let Some(zero_length) = self.zero_length {
+            flags |= 0x0001 | set_flag!(zero_length, 0x0002);
+        }
+        if let Some(last) = self.last {
+            flags |= 0x0004 | set_flag!(last, 0x0008);
+        }
+        let delimiter_crc = if let Some(delimiter_crc) = self.delimiter_crc {
+            flags |= 0x0020;
+            delimiter_crc
+        } else {
+            0
+        };
+
+        let mut size = 0;
+        size += writer.write(&self.reference.to_le_bytes())?;
+        size += writer.write(&flags.to_le_bytes())?;
+        size += writer.write(&delimiter_crc.to_le_bytes())?;
+        size += writer.write(b"\x00")?; // reserved
+
+        Ok(size)
     }
 }
 
@@ -851,9 +1158,10 @@ impl Field for VHT {
 
             vht.users[id as usize] = Some(VHTUser {
                 index,
-                fec: match (coding & 2 ^ id) >> id {
-                    1 => FEC::LDPC,
-                    _ => FEC::BCC,
+                fec: if coding.is_bit_set(id) {
+                    FEC::LDPC
+                } else {
+                    FEC::BCC
                 },
                 nss,
                 nsts,
@@ -862,6 +1170,91 @@ impl Field for VHT {
         }
 
         Ok(vht)
+    }
+}
+
+impl Unparse for VHT {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let mut known = 0u16;
+        let mut flags = 0u8;
+
+        if let Some(stbc) = self.stbc {
+            known |= 0x0001;
+            flags |= set_flag!(stbc, 0x01);
+        }
+
+        if let Some(txop_ps) = self.txop_ps {
+            known |= 0x0002;
+            flags |= set_flag!(txop_ps, 0x02);
+        }
+
+        if let Some(gi) = self.gi {
+            known |= 0x0004;
+            match gi {
+                GuardInterval::Short => flags |= 0x04,
+                GuardInterval::Long => (),
+            }
+        }
+
+        if let Some(sgi_nsym_da) = self.sgi_nsym_da {
+            known |= 0x0008;
+            flags |= set_flag!(sgi_nsym_da, 0x08);
+        }
+
+        if let Some(ldpc_extra) = self.ldpc_extra {
+            known |= 0x0010;
+            flags |= set_flag!(ldpc_extra, 0x10);
+        }
+
+        if let Some(beamformed) = self.beamformed {
+            known |= 0x0020;
+            flags |= set_flag!(beamformed, 0x20);
+        }
+
+        let bw = if let Some(bw) = self.bw {
+            known |= 0x0040;
+            bw.code()? & 0x1f
+        } else {
+            0
+        };
+
+        let group_id = if let Some(group_id) = self.group_id {
+            known |= 0x0080;
+            group_id
+        } else {
+            0
+        };
+
+        let partial_aid = if let Some(partial_aid) = self.partial_aid {
+            known |= 0x0100;
+            partial_aid
+        } else {
+            0
+        };
+
+        let mut coding = 0u8;
+        let mut mcs_nss = [0u8; 4];
+        for (i, user) in self.users.iter().enumerate() {
+            if let Some(user) = user {
+                mcs_nss[i] = (user.nss & 0x0f) | (user.index & 0x0f) << 4;
+
+                match user.fec {
+                    FEC::LDPC => coding |= 1 << i,
+                    FEC::BCC => (),
+                }
+            }
+        }
+
+        let mut size = 0;
+        size += writer.write(&known.to_le_bytes())?;
+        size += writer.write(&flags.to_le_bytes())?;
+        size += writer.write(&bw.to_le_bytes())?;
+        size += writer.write(&mcs_nss)?;
+        size += writer.write(&coding.to_le_bytes())?;
+        size += writer.write(&group_id.to_le_bytes())?;
+        size += writer.write(&partial_aid.to_le_bytes())?;
+
+        Ok(size)
     }
 }
 
@@ -886,7 +1279,7 @@ impl Field for Timestamp {
         let mut accuracy = Some(cursor.read_u16::<LE>()?);
         let unit_position = cursor.read_u8()?;
         let unit = TimeUnit::new(unit_position & 0x0f)?;
-        let position = SamplingPosition::from(unit_position & 0xf0 >> 4)?;
+        let position = SamplingPosition::from((unit_position & 0xf0) >> 4)?;
         let flags = cursor.read_u8()?;
 
         if !flags.is_flag_set(0x02) {
@@ -899,6 +1292,21 @@ impl Field for Timestamp {
             position,
             accuracy,
         })
+    }
+}
+
+impl Unparse for Timestamp {
+    fn unparse<W: Write>(&self, mut writer: W) -> Result<usize> {
+        let unit_position = self.unit.code() | (self.position.code() << 4 & 0xf0);
+        let flags: u8 = set_flag!(self.accuracy.is_some(), 0x02);
+
+        let mut size = 0;
+        size += writer.write(&self.timestamp.to_le_bytes())?;
+        size += writer.write(&self.accuracy.unwrap_or_default().to_le_bytes())?;
+        size += writer.write(&unit_position.to_le_bytes())?;
+        size += writer.write(&flags.to_le_bytes())?;
+
+        Ok(size)
     }
 }
 

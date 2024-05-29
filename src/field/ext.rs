@@ -272,6 +272,44 @@ impl Bandwidth {
             sideband_index,
         })
     }
+
+    pub(crate) fn code(&self) -> Result<u8> {
+        let Bandwidth {
+            bandwidth,
+            sideband,
+            sideband_index,
+        } = self;
+
+        match (bandwidth, sideband, sideband_index) {
+            (20, None, None) => Ok(0),
+            (40, None, None) => Ok(1),
+            (40, Some(20), Some(0)) => Ok(2),
+            (40, Some(20), Some(1)) => Ok(3),
+            (80, None, None) => Ok(4),
+            (80, Some(40), Some(0)) => Ok(5),
+            (80, Some(40), Some(1)) => Ok(6),
+            (80, Some(20), Some(0)) => Ok(7),
+            (80, Some(20), Some(1)) => Ok(8),
+            (80, Some(20), Some(2)) => Ok(9),
+            (80, Some(20), Some(3)) => Ok(10),
+            (160, None, None) => Ok(11),
+            (160, Some(80), Some(0)) => Ok(12),
+            (160, Some(80), Some(1)) => Ok(13),
+            (160, Some(40), Some(0)) => Ok(14),
+            (160, Some(40), Some(1)) => Ok(15),
+            (160, Some(40), Some(2)) => Ok(16),
+            (160, Some(40), Some(3)) => Ok(17),
+            (160, Some(20), Some(0)) => Ok(18),
+            (160, Some(20), Some(1)) => Ok(19),
+            (160, Some(20), Some(2)) => Ok(20),
+            (160, Some(20), Some(3)) => Ok(21),
+            (160, Some(20), Some(4)) => Ok(22),
+            (160, Some(20), Some(5)) => Ok(23),
+            (160, Some(20), Some(6)) => Ok(24),
+            (160, Some(20), Some(7)) => Ok(25),
+            _ => Err(Error::InvalidFormat),
+        }
+    }
 }
 
 /// Represents a [VHT](../struct.VHT.html) user, the [VHT](../struct.VHT.html)
@@ -334,6 +372,14 @@ impl TimeUnit {
             }
         })
     }
+
+    pub(crate) fn code(&self) -> u8 {
+        match self {
+            TimeUnit::Milliseconds => 0,
+            TimeUnit::Microseconds => 1,
+            TimeUnit::Nanoseconds => 2,
+        }
+    }
 }
 
 /// The sampling position of the [Timestamp](../struct.Timestamp.html).
@@ -356,5 +402,15 @@ impl SamplingPosition {
             15 => SamplingPosition::Unknown,
             _ => return Err(Error::InvalidFormat),
         })
+    }
+
+    pub(crate) fn code(&self) -> u8 {
+        match self {
+            SamplingPosition::StartMPDU => 0,
+            SamplingPosition::StartPLCP => 1,
+            SamplingPosition::EndPPDU => 2,
+            SamplingPosition::EndMPDU => 3,
+            SamplingPosition::Unknown => 15,
+        }
     }
 }
